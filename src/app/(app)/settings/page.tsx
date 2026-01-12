@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { PageHeader } from "@/components/layout/page-header"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -14,8 +15,9 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { useToast } from "@/hooks/use-toast"
-import { Cloud, HardDrive, Plus, Trash2, FolderOpen } from "lucide-react"
+import { Cloud, HardDrive, Plus, Trash2, FolderOpen, CheckCircle, AlertCircle } from "lucide-react"
 import Link from "next/link"
 
 interface UserSettings {
@@ -42,7 +44,12 @@ export default function SettingsPage() {
   const [cloudStorages, setCloudStorages] = useState<CloudStorage[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [isConnectingOneDrive, setIsConnectingOneDrive] = useState(false)
   const { toast } = useToast()
+  const searchParams = useSearchParams()
+
+  const successMessage = searchParams.get("success")
+  const errorMessage = searchParams.get("error")
 
   useEffect(() => {
     async function fetchData() {
@@ -72,6 +79,65 @@ export default function SettingsPage() {
 
     fetchData()
   }, [])
+
+  const handleConnectOneDrive = async () => {
+    setIsConnectingOneDrive(true)
+    try {
+      const response = await fetch("/api/onedrive/auth")
+      const data = await response.json()
+
+      if (data.authUrl) {
+        window.location.href = data.authUrl
+      } else if (data.error) {
+        toast({
+          title: "Error",
+          description: data.error,
+          variant: "destructive",
+        })
+        setIsConnectingOneDrive(false)
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to initiate OneDrive connection",
+        variant: "destructive",
+      })
+      setIsConnectingOneDrive(false)
+    }
+  }
+
+  const handleDisconnectStorage = async (storageId: string, storageName: string) => {
+    if (!confirm(`Are you sure you want to disconnect ${storageName}? This will remove all associated invoice folder configurations.`)) {
+      return
+    }
+
+    try {
+      const response = await fetch(`/api/cloud-storage?id=${storageId}`, {
+        method: "DELETE",
+      })
+
+      if (response.ok) {
+        setCloudStorages(prev => prev.filter(s => s.id !== storageId))
+        toast({
+          title: "Disconnected",
+          description: `${storageName} has been disconnected`,
+        })
+      } else {
+        const data = await response.json()
+        toast({
+          title: "Error",
+          description: data.error || "Failed to disconnect storage",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to disconnect storage",
+        variant: "destructive",
+      })
+    }
+  }
 
   const handleSaveSettings = async () => {
     setIsSaving(true)
@@ -112,6 +178,22 @@ export default function SettingsPage() {
       <PageHeader title="Settings" description="Manage your preferences and integrations" />
 
       <div className="p-6 max-w-3xl space-y-6">
+        {/* Success/Error Messages */}
+        {successMessage && (
+          <Alert className="border-green-200 bg-green-50">
+            <CheckCircle className="h-4 w-4 text-green-600" />
+            <AlertDescription className="text-green-800">
+              {successMessage}
+            </AlertDescription>
+          </Alert>
+        )}
+        {errorMessage && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>{errorMessage}</AlertDescription>
+          </Alert>
+        )}
+
         {/* General Settings */}
         <Card>
           <CardHeader>
@@ -232,7 +314,12 @@ export default function SettingsPage() {
                           <FolderOpen className="h-4 w-4" />
                         </Link>
                       </Button>
-                      <Button variant="ghost" size="sm" className="text-destructive">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => handleDisconnectStorage(storage.id, storage.name)}
+                      >
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
@@ -257,13 +344,18 @@ export default function SettingsPage() {
                   Connect Google Drive
                 </Link>
               </Button>
-              <Button variant="outline" asChild>
-                <Link href="/api/auth/onedrive">
-                  <svg className="mr-2 h-4 w-4 text-blue-600" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="2" fill="none"/>
-                  </svg>
-                  Connect OneDrive
-                </Link>
+              <Button
+                variant="outline"
+                onClick={handleConnectOneDrive}
+                disabled={isConnectingOneDrive}
+              >
+                <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M10.5 18.5c-2.5 0-4.5-2-4.5-4.5 0-2.1 1.5-3.9 3.4-4.4.3-2.3 2.3-4.1 4.6-4.1 2.1 0 3.9 1.4 4.5 3.3.2 0 .3 0 .5 0 2.2 0 4 1.8 4 4s-1.8 4-4 4H10.5z" fill="#0364B8"/>
+                  <path d="M10.5 18.5c-2.5 0-4.5-2-4.5-4.5 0-2.1 1.5-3.9 3.4-4.4.3-2.3 2.3-4.1 4.6-4.1.8 0 1.5.2 2.2.5-1.1.5-2 1.4-2.4 2.5-.2.6-.3 1.2-.3 1.9v.1c-1.7.4-3 1.9-3 3.5 0 2 1.5 3.6 3.4 4h-3.4v.5z" fill="#0078D4"/>
+                  <path d="M6 14c0-2.1 1.5-3.9 3.5-4.4C9.8 7.3 11.7 5.5 14 5.5c.8 0 1.5.2 2.2.5-.7.3-1.3.8-1.8 1.4-.4.5-.7 1-.9 1.6-1.7.4-3 1.9-3 3.5 0 1.5.9 2.8 2.2 3.4H6.5c-.3-.6-.5-1.3-.5-1.9z" fill="#1490DF"/>
+                  <path d="M3.5 17c-1.4 0-2.5-1.1-2.5-2.5S2.1 12 3.5 12c.2 0 .4 0 .6.1C4.4 10.3 6 9 8 9c.9 0 1.8.3 2.5.8-.6.5-1 1.2-1.3 2C7.4 12.2 6 13.9 6 16v.5c0 .2 0 .3.1.5H3.5z" fill="#28A8EA"/>
+                </svg>
+                {isConnectingOneDrive ? "Connecting..." : "Connect OneDrive"}
               </Button>
             </div>
           </CardContent>

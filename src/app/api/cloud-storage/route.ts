@@ -60,3 +60,39 @@ export async function POST(request: NextRequest) {
     )
   }
 }
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions)
+
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    const { searchParams } = new URL(request.url)
+    const id = searchParams.get("id")
+
+    if (!id) {
+      return NextResponse.json({ error: "Storage ID required" }, { status: 400 })
+    }
+
+    // Verify ownership
+    const storage = await db.query.cloudStorages.findFirst({
+      where: (s, { and, eq }) => and(eq(s.id, id), eq(s.userId, session.user.id)),
+    })
+
+    if (!storage) {
+      return NextResponse.json({ error: "Storage not found" }, { status: 404 })
+    }
+
+    await db.delete(cloudStorages).where(eq(cloudStorages.id, id))
+
+    return NextResponse.json({ success: true })
+  } catch (error) {
+    console.error("Error deleting cloud storage:", error)
+    return NextResponse.json(
+      { error: "Failed to delete cloud storage" },
+      { status: 500 }
+    )
+  }
+}
