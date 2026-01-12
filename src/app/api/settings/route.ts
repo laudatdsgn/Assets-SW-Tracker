@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { db, userSettings } from "@/lib/db"
+import { eq } from "drizzle-orm"
 import { z } from "zod"
+import { randomUUID } from "crypto"
 
 const updateSettingsSchema = z.object({
   defaultCurrency: z.string().optional(),
@@ -17,19 +19,18 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const settings = await prisma.userSettings.findUnique({
-      where: { userId: session.user.id },
+    const settings = await db.query.userSettings.findFirst({
+      where: eq(userSettings.userId, session.user.id),
     })
 
     if (!settings) {
       // Create default settings if they don't exist
-      const newSettings = await prisma.userSettings.create({
-        data: {
-          userId: session.user.id,
-          defaultCurrency: "CZK",
-          scanFrequency: 60,
-        },
-      })
+      const [newSettings] = await db.insert(userSettings).values({
+        id: randomUUID(),
+        userId: session.user.id,
+        defaultCurrency: "CZK",
+        scanFrequency: 60,
+      }).returning()
       return NextResponse.json(newSettings)
     }
 
@@ -54,14 +55,32 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json()
     const validatedData = updateSettingsSchema.parse(body)
 
-    const settings = await prisma.userSettings.upsert({
-      where: { userId: session.user.id },
-      update: validatedData,
-      create: {
-        userId: session.user.id,
-        ...validatedData,
-      },
+    // Check if settings exist
+    const existingSettings = await db.query.userSettings.findFirst({
+      where: eq(userSettings.userId, session.user.id),
     })
+
+    let settings
+    if (existingSettings) {
+      // Update existing settings
+      await db.update(userSettings).set({
+        ...validatedData,
+        updatedAt: new Date(),
+      }).where(eq(userSettings.userId, session.user.id))
+
+      settings = await db.query.userSettings.findFirst({
+        where: eq(userSettings.userId, session.user.id),
+      })
+    } else {
+      // Create new settings (upsert behavior)
+      const [newSettings] = await db.insert(userSettings).values({
+        id: randomUUID(),
+        userId: session.user.id,
+        defaultCurrency: validatedData.defaultCurrency || "CZK",
+        scanFrequency: validatedData.scanFrequency || 60,
+      }).returning()
+      settings = newSettings
+    }
 
     return NextResponse.json(settings)
   } catch (error) {

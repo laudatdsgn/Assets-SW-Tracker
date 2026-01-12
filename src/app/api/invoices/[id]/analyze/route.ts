@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { db, invoices } from "@/lib/db"
+import { eq } from "drizzle-orm"
 import { analyzeInvoice, analyzeInvoiceImage } from "@/lib/invoice-analysis"
 
 export async function POST(
@@ -16,22 +17,22 @@ export async function POST(
     }
 
     // Verify ownership
-    const invoice = await prisma.invoice.findFirst({
-      where: {
-        id: params.id,
-        cloudStorage: { userId: session.user.id },
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, params.id),
+      with: {
+        cloudStorage: true,
       },
     })
 
-    if (!invoice) {
+    if (!invoice || invoice.cloudStorage?.userId !== session.user.id) {
       return NextResponse.json({ error: "Invoice not found" }, { status: 404 })
     }
 
     // Mark as processing
-    await prisma.invoice.update({
-      where: { id: params.id },
-      data: { status: "PROCESSING" },
-    })
+    await db.update(invoices).set({
+      status: "PROCESSING",
+      updatedAt: new Date(),
+    }).where(eq(invoices.id, params.id))
 
     // Get invoice content from request body
     const body = await request.json()
@@ -48,22 +49,24 @@ export async function POST(
     }
 
     // Update invoice with extracted data
-    const updatedInvoice = await prisma.invoice.update({
-      where: { id: params.id },
-      data: {
-        supplierName: result.supplierName,
-        invoiceNumber: result.invoiceNumber,
-        issueDate: result.issueDate ? new Date(result.issueDate) : null,
-        taxableSupplyDate: result.taxableSupplyDate
-          ? new Date(result.taxableSupplyDate)
-          : null,
-        totalPrice: result.totalPrice,
-        currency: result.currency,
-        hasVat: result.hasVat,
-        extractionConfidence: result.confidence,
-        rawExtractedData: result as any,
-        status: "NEW", // Back to NEW for user review
-      },
+    await db.update(invoices).set({
+      supplierName: result.supplierName,
+      invoiceNumber: result.invoiceNumber,
+      issueDate: result.issueDate ? new Date(result.issueDate) : null,
+      taxableSupplyDate: result.taxableSupplyDate
+        ? new Date(result.taxableSupplyDate)
+        : null,
+      totalPrice: result.totalPrice,
+      currency: result.currency,
+      hasVat: result.hasVat,
+      extractionConfidence: result.confidence,
+      rawExtractedData: JSON.stringify(result),
+      status: "NEW", // Back to NEW for user review
+      updatedAt: new Date(),
+    }).where(eq(invoices.id, params.id))
+
+    const updatedInvoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, params.id),
     })
 
     return NextResponse.json({
@@ -74,10 +77,10 @@ export async function POST(
     console.error("Error analyzing invoice:", error)
 
     // Mark as error
-    await prisma.invoice.update({
-      where: { id: params.id },
-      data: { status: "ERROR" },
-    })
+    await db.update(invoices).set({
+      status: "ERROR",
+      updatedAt: new Date(),
+    }).where(eq(invoices.id, params.id))
 
     return NextResponse.json(
       { error: "Failed to analyze invoice" },

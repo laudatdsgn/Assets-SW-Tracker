@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { db, spaces, assets, software, invoices } from "@/lib/db"
+import { eq, and, count } from "drizzle-orm"
 import { z } from "zod"
 
 const updateSpaceSchema = z.object({
   name: z.string().min(1).max(50).optional(),
-  description: z.string().optional(),
+  description: z.string().optional().nullable(),
   color: z.string().optional(),
 })
 
@@ -21,27 +22,38 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const space = await prisma.space.findFirst({
-      where: {
-        id: params.id,
-        userId: session.user.id,
-      },
-      include: {
-        _count: {
-          select: {
-            assets: true,
-            software: true,
-            invoices: true,
-          },
-        },
-      },
+    const space = await db.query.spaces.findFirst({
+      where: and(eq(spaces.id, params.id), eq(spaces.userId, session.user.id)),
     })
 
     if (!space) {
       return NextResponse.json({ error: "Space not found" }, { status: 404 })
     }
 
-    return NextResponse.json(space)
+    // Get counts
+    const [assetCount] = await db
+      .select({ count: count() })
+      .from(assets)
+      .where(eq(assets.spaceId, params.id))
+
+    const [softwareCount] = await db
+      .select({ count: count() })
+      .from(software)
+      .where(eq(software.spaceId, params.id))
+
+    const [invoiceCount] = await db
+      .select({ count: count() })
+      .from(invoices)
+      .where(eq(invoices.spaceId, params.id))
+
+    return NextResponse.json({
+      ...space,
+      _count: {
+        assets: assetCount?.count || 0,
+        software: softwareCount?.count || 0,
+        invoices: invoiceCount?.count || 0,
+      },
+    })
   } catch (error) {
     console.error("Error fetching space:", error)
     return NextResponse.json(
@@ -66,23 +78,27 @@ export async function PATCH(
     const validatedData = updateSpaceSchema.parse(body)
 
     // Verify ownership
-    const existingSpace = await prisma.space.findFirst({
-      where: {
-        id: params.id,
-        userId: session.user.id,
-      },
+    const existingSpace = await db.query.spaces.findFirst({
+      where: and(eq(spaces.id, params.id), eq(spaces.userId, session.user.id)),
     })
 
     if (!existingSpace) {
       return NextResponse.json({ error: "Space not found" }, { status: 404 })
     }
 
-    const space = await prisma.space.update({
-      where: { id: params.id },
-      data: validatedData,
+    await db
+      .update(spaces)
+      .set({
+        ...validatedData,
+        updatedAt: new Date(),
+      })
+      .where(eq(spaces.id, params.id))
+
+    const updatedSpace = await db.query.spaces.findFirst({
+      where: eq(spaces.id, params.id),
     })
 
-    return NextResponse.json(space)
+    return NextResponse.json(updatedSpace)
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.errors }, { status: 400 })
@@ -107,20 +123,15 @@ export async function DELETE(
     }
 
     // Verify ownership
-    const existingSpace = await prisma.space.findFirst({
-      where: {
-        id: params.id,
-        userId: session.user.id,
-      },
+    const existingSpace = await db.query.spaces.findFirst({
+      where: and(eq(spaces.id, params.id), eq(spaces.userId, session.user.id)),
     })
 
     if (!existingSpace) {
       return NextResponse.json({ error: "Space not found" }, { status: 404 })
     }
 
-    await prisma.space.delete({
-      where: { id: params.id },
-    })
+    await db.delete(spaces).where(eq(spaces.id, params.id))
 
     return NextResponse.json({ success: true })
   } catch (error) {

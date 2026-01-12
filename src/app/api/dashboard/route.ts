@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { db, assets, software, invoices, spaces } from "@/lib/db"
+import { eq, and, gte, lte, count, inArray } from "drizzle-orm"
 
 export async function GET(request: NextRequest) {
   try {
@@ -16,35 +17,47 @@ export async function GET(request: NextRequest) {
 
     // Verify space ownership
     if (spaceId) {
-      const space = await prisma.space.findFirst({
-        where: { id: spaceId, userId: session.user.id },
+      const space = await db.query.spaces.findFirst({
+        where: and(eq(spaces.id, spaceId), eq(spaces.userId, session.user.id)),
       })
       if (!space) {
         return NextResponse.json({ error: "Space not found" }, { status: 404 })
       }
     }
 
-    const whereClause = spaceId
-      ? { spaceId, space: { userId: session.user.id } }
-      : { space: { userId: session.user.id } }
+    // Get user's space IDs for filtering
+    const userSpaces = await db.query.spaces.findMany({
+      where: eq(spaces.userId, session.user.id),
+      columns: { id: true },
+    })
+    const userSpaceIds = userSpaces.map(s => s.id)
+
+    // Build space filter
+    const spaceFilter = spaceId
+      ? eq(assets.spaceId, spaceId)
+      : inArray(assets.spaceId, userSpaceIds)
+
+    const softwareSpaceFilter = spaceId
+      ? eq(software.spaceId, spaceId)
+      : inArray(software.spaceId, userSpaceIds)
 
     // Get total asset value
-    const assets = await prisma.asset.findMany({
-      where: { ...whereClause, status: "ACTIVE" },
-      select: {
+    const assetsList = await db.query.assets.findMany({
+      where: and(spaceFilter, eq(assets.status, "ACTIVE")),
+      columns: {
         price: true,
         currency: true,
       },
     })
 
-    const totalAssetValue = assets.reduce((sum, asset) => {
+    const totalAssetValue = assetsList.reduce((sum, asset) => {
       return sum + Number(asset.price)
     }, 0)
 
     // Get software costs
-    const software = await prisma.software.findMany({
-      where: { ...whereClause, status: "ACTIVE" },
-      select: {
+    const softwareList = await db.query.software.findMany({
+      where: and(softwareSpaceFilter, eq(software.status, "ACTIVE")),
+      columns: {
         price: true,
         currency: true,
         billingPeriod: true,
@@ -53,7 +66,7 @@ export async function GET(request: NextRequest) {
     })
 
     // Calculate yearly software cost
-    const yearlySoftwareCost = software.reduce((sum, sw) => {
+    const yearlySoftwareCost = softwareList.reduce((sum, sw) => {
       const price = Number(sw.price)
       switch (sw.billingPeriod) {
         case "MONTHLY":
@@ -62,6 +75,8 @@ export async function GET(request: NextRequest) {
           return sum + price
         case "ONE_TIME":
           return sum
+        default:
+          return sum
       }
     }, 0)
 
@@ -69,16 +84,14 @@ export async function GET(request: NextRequest) {
     const thirtyDaysFromNow = new Date()
     thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30)
 
-    const upcomingPayments = await prisma.software.findMany({
-      where: {
-        ...whereClause,
-        status: "ACTIVE",
-        nextPaymentDate: {
-          lte: thirtyDaysFromNow,
-          gte: new Date(),
-        },
-      },
-      select: {
+    const upcomingPayments = await db.query.software.findMany({
+      where: and(
+        softwareSpaceFilter,
+        eq(software.status, "ACTIVE"),
+        gte(software.nextPaymentDate, new Date()),
+        lte(software.nextPaymentDate, thirtyDaysFromNow)
+      ),
+      columns: {
         id: true,
         name: true,
         price: true,
@@ -86,51 +99,57 @@ export async function GET(request: NextRequest) {
         nextPaymentDate: true,
         billingPeriod: true,
       },
-      orderBy: { nextPaymentDate: "asc" },
-      take: 10,
+      orderBy: (software, { asc }) => [asc(software.nextPaymentDate)],
+      limit: 10,
     })
 
     // Get assets nearing depreciation end (next 3 months)
     const threeMonthsFromNow = new Date()
     threeMonthsFromNow.setMonth(threeMonthsFromNow.getMonth() + 3)
 
-    const assetsNearingDepreciation = await prisma.asset.findMany({
-      where: {
-        ...whereClause,
-        status: "ACTIVE",
-        depreciationType: "TAX_DEPRECIATION",
-        depreciationEndDate: {
-          lte: threeMonthsFromNow,
-          gte: new Date(),
-        },
-      },
-      select: {
+    const assetsNearingDepreciation = await db.query.assets.findMany({
+      where: and(
+        spaceFilter,
+        eq(assets.status, "ACTIVE"),
+        eq(assets.depreciationType, "TAX_DEPRECIATION"),
+        gte(assets.depreciationEndDate, new Date()),
+        lte(assets.depreciationEndDate, threeMonthsFromNow)
+      ),
+      columns: {
         id: true,
         name: true,
         depreciationEndDate: true,
         price: true,
         currency: true,
       },
-      orderBy: { depreciationEndDate: "asc" },
-      take: 10,
+      orderBy: (assets, { asc }) => [asc(assets.depreciationEndDate)],
+      limit: 10,
     })
 
     // Get unprocessed invoices count
-    const unprocessedInvoicesCount = await prisma.invoice.count({
-      where: {
-        status: "NEW",
-        ...(spaceId ? { spaceId } : {}),
-      },
-    })
+    const [unprocessedResult] = await db
+      .select({ count: count() })
+      .from(invoices)
+      .where(
+        spaceId
+          ? and(eq(invoices.status, "NEW"), eq(invoices.spaceId, spaceId))
+          : eq(invoices.status, "NEW")
+      )
+    const unprocessedInvoicesCount = unprocessedResult?.count || 0
 
-    // Get counts
-    const assetCount = await prisma.asset.count({
-      where: { ...whereClause, status: "ACTIVE" },
-    })
+    // Get asset count
+    const [assetCountResult] = await db
+      .select({ count: count() })
+      .from(assets)
+      .where(and(spaceFilter, eq(assets.status, "ACTIVE")))
+    const assetCount = assetCountResult?.count || 0
 
-    const softwareCount = await prisma.software.count({
-      where: { ...whereClause, status: "ACTIVE" },
-    })
+    // Get software count
+    const [softwareCountResult] = await db
+      .select({ count: count() })
+      .from(software)
+      .where(and(softwareSpaceFilter, eq(software.status, "ACTIVE")))
+    const softwareCount = softwareCountResult?.count || 0
 
     return NextResponse.json({
       totalAssetValue,

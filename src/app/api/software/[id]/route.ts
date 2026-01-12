@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { db, software } from "@/lib/db"
+import { eq } from "drizzle-orm"
 import { z } from "zod"
 
 const updateSoftwareSchema = z.object({
@@ -50,39 +51,23 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const software = await prisma.software.findFirst({
-      where: {
-        id: params.id,
-        space: {
-          userId: session.user.id,
-        },
-      },
-      include: {
-        invoices: {
-          select: {
-            id: true,
-            fileName: true,
-            cloudFileUrl: true,
-            supplierName: true,
-            totalPrice: true,
-            issueDate: true,
-          },
-          orderBy: { createdAt: "desc" },
-        },
-        space: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
+    const sw = await db.query.software.findFirst({
+      where: eq(software.id, params.id),
+      with: {
+        space: true,
       },
     })
 
-    if (!software) {
+    if (!sw) {
       return NextResponse.json({ error: "Software not found" }, { status: 404 })
     }
 
-    return NextResponse.json(software)
+    // Verify ownership through space
+    if (sw.space.userId !== session.user.id) {
+      return NextResponse.json({ error: "Software not found" }, { status: 404 })
+    }
+
+    return NextResponse.json(sw)
   } catch (error) {
     console.error("Error fetching software:", error)
     return NextResponse.json(
@@ -107,25 +92,27 @@ export async function PATCH(
     const validatedData = updateSoftwareSchema.parse(body)
 
     // Verify ownership
-    const existingSoftware = await prisma.software.findFirst({
-      where: {
-        id: params.id,
-        space: {
-          userId: session.user.id,
-        },
+    const existingSoftware = await db.query.software.findFirst({
+      where: eq(software.id, params.id),
+      with: {
+        space: true,
       },
     })
 
-    if (!existingSoftware) {
+    if (!existingSoftware || existingSoftware.space.userId !== session.user.id) {
       return NextResponse.json({ error: "Software not found" }, { status: 404 })
     }
 
-    const software = await prisma.software.update({
-      where: { id: params.id },
-      data: validatedData,
+    await db.update(software).set({
+      ...validatedData,
+      updatedAt: new Date(),
+    }).where(eq(software.id, params.id))
+
+    const sw = await db.query.software.findFirst({
+      where: eq(software.id, params.id),
     })
 
-    return NextResponse.json(software)
+    return NextResponse.json(sw)
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.errors }, { status: 400 })
@@ -150,22 +137,18 @@ export async function DELETE(
     }
 
     // Verify ownership
-    const existingSoftware = await prisma.software.findFirst({
-      where: {
-        id: params.id,
-        space: {
-          userId: session.user.id,
-        },
+    const existingSoftware = await db.query.software.findFirst({
+      where: eq(software.id, params.id),
+      with: {
+        space: true,
       },
     })
 
-    if (!existingSoftware) {
+    if (!existingSoftware || existingSoftware.space.userId !== session.user.id) {
       return NextResponse.json({ error: "Software not found" }, { status: 404 })
     }
 
-    await prisma.software.delete({
-      where: { id: params.id },
-    })
+    await db.delete(software).where(eq(software.id, params.id))
 
     return NextResponse.json({ success: true })
   } catch (error) {

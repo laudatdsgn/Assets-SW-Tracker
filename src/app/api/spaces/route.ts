@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { db, spaces } from "@/lib/db"
+import { eq, asc } from "drizzle-orm"
 import { z } from "zod"
+import { randomUUID } from "crypto"
 
 const createSpaceSchema = z.object({
   name: z.string().min(1).max(50),
@@ -18,12 +20,12 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const spaces = await prisma.space.findMany({
-      where: { userId: session.user.id },
-      orderBy: { createdAt: "asc" },
+    const userSpaces = await db.query.spaces.findMany({
+      where: eq(spaces.userId, session.user.id),
+      orderBy: [asc(spaces.createdAt)],
     })
 
-    return NextResponse.json(spaces)
+    return NextResponse.json(userSpaces)
   } catch (error) {
     console.error("Error fetching spaces:", error)
     return NextResponse.json(
@@ -44,14 +46,17 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const validatedData = createSpaceSchema.parse(body)
 
-    const space = await prisma.space.create({
-      data: {
-        ...validatedData,
-        userId: session.user.id,
-      },
-    })
+    const newSpace = {
+      id: randomUUID(),
+      name: validatedData.name,
+      description: validatedData.description || null,
+      color: validatedData.color || "#6366f1",
+      userId: session.user.id,
+    }
 
-    return NextResponse.json(space, { status: 201 })
+    await db.insert(spaces).values(newSpace)
+
+    return NextResponse.json(newSpace, { status: 201 })
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.errors }, { status: 400 })

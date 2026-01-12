@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { db, software, spaces } from "@/lib/db"
+import { eq, and, desc, inArray } from "drizzle-orm"
 import { z } from "zod"
+import { randomUUID } from "crypto"
 
 const createSoftwareSchema = z.object({
   name: z.string().min(1).max(200),
@@ -49,43 +51,41 @@ export async function GET(request: NextRequest) {
 
     // Verify space ownership
     if (spaceId) {
-      const space = await prisma.space.findFirst({
-        where: { id: spaceId, userId: session.user.id },
+      const space = await db.query.spaces.findFirst({
+        where: and(eq(spaces.id, spaceId), eq(spaces.userId, session.user.id)),
       })
       if (!space) {
         return NextResponse.json({ error: "Space not found" }, { status: 404 })
       }
     }
 
-    const software = await prisma.software.findMany({
-      where: {
-        space: {
-          userId: session.user.id,
-        },
-        ...(spaceId && { spaceId }),
-        ...(status && { status: status as any }),
+    // Get user's space IDs for filtering
+    const userSpaces = await db.query.spaces.findMany({
+      where: eq(spaces.userId, session.user.id),
+      columns: { id: true },
+    })
+    const userSpaceIds = userSpaces.map(s => s.id)
+
+    // Build filter conditions
+    let whereConditions = inArray(software.spaceId, userSpaceIds)
+
+    if (spaceId) {
+      whereConditions = eq(software.spaceId, spaceId)
+    }
+
+    if (status) {
+      whereConditions = and(whereConditions, eq(software.status, status as any))!
+    }
+
+    const softwareList = await db.query.software.findMany({
+      where: whereConditions,
+      with: {
+        space: true,
       },
-      include: {
-        invoices: {
-          select: {
-            id: true,
-            fileName: true,
-            cloudFileUrl: true,
-          },
-          take: 1,
-          orderBy: { createdAt: "desc" },
-        },
-        space: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-      },
-      orderBy: { createdAt: "desc" },
+      orderBy: desc(software.createdAt),
     })
 
-    return NextResponse.json(software)
+    return NextResponse.json(softwareList)
   } catch (error) {
     console.error("Error fetching software:", error)
     return NextResponse.json(
@@ -107,8 +107,8 @@ export async function POST(request: NextRequest) {
     const validatedData = createSoftwareSchema.parse(body)
 
     // Verify space ownership
-    const space = await prisma.space.findFirst({
-      where: { id: validatedData.spaceId, userId: session.user.id },
+    const space = await db.query.spaces.findFirst({
+      where: and(eq(spaces.id, validatedData.spaceId), eq(spaces.userId, session.user.id)),
     })
     if (!space) {
       return NextResponse.json({ error: "Space not found" }, { status: 404 })
@@ -125,24 +125,22 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const software = await prisma.software.create({
-      data: {
-        name: validatedData.name,
-        description: validatedData.description,
-        category: validatedData.category,
-        url: validatedData.url,
-        price: validatedData.price,
-        currency: validatedData.currency,
-        billingPeriod: validatedData.billingPeriod,
-        startDate: validatedData.startDate,
-        nextPaymentDate,
-        status: validatedData.status,
-        spaceId: validatedData.spaceId,
-        primaryInvoiceId: validatedData.primaryInvoiceId,
-      },
-    })
+    const [sw] = await db.insert(software).values({
+      id: randomUUID(),
+      name: validatedData.name,
+      description: validatedData.description,
+      category: validatedData.category,
+      url: validatedData.url,
+      price: validatedData.price,
+      currency: validatedData.currency,
+      billingPeriod: validatedData.billingPeriod,
+      startDate: validatedData.startDate,
+      nextPaymentDate,
+      status: validatedData.status,
+      spaceId: validatedData.spaceId,
+    }).returning()
 
-    return NextResponse.json(software, { status: 201 })
+    return NextResponse.json(sw, { status: 201 })
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.errors }, { status: 400 })

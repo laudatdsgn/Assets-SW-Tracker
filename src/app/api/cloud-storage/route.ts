@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { db, cloudStorages } from "@/lib/db"
+import { eq, asc } from "drizzle-orm"
+import { randomUUID } from "crypto"
 
 export async function GET() {
   try {
@@ -11,21 +13,15 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const cloudStorages = await prisma.cloudStorage.findMany({
-      where: { userId: session.user.id },
-      include: {
-        invoiceFolders: {
-          select: {
-            id: true,
-            folderPath: true,
-            isActive: true,
-          },
-        },
+    const storages = await db.query.cloudStorages.findMany({
+      where: eq(cloudStorages.userId, session.user.id),
+      with: {
+        invoiceFolders: true,
       },
-      orderBy: { createdAt: "asc" },
+      orderBy: asc(cloudStorages.createdAt),
     })
 
-    return NextResponse.json(cloudStorages)
+    return NextResponse.json(storages)
   } catch (error) {
     console.error("Error fetching cloud storages:", error)
     return NextResponse.json(
@@ -45,16 +41,15 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json()
 
-    const cloudStorage = await prisma.cloudStorage.create({
-      data: {
-        name: body.name,
-        provider: body.provider,
-        accessToken: body.accessToken,
-        refreshToken: body.refreshToken,
-        tokenExpiry: body.tokenExpiry ? new Date(body.tokenExpiry) : null,
-        userId: session.user.id,
-      },
-    })
+    const [cloudStorage] = await db.insert(cloudStorages).values({
+      id: randomUUID(),
+      name: body.name,
+      provider: body.provider,
+      accessToken: body.accessToken,
+      refreshToken: body.refreshToken,
+      tokenExpiry: body.tokenExpiry ? new Date(body.tokenExpiry) : null,
+      userId: session.user.id,
+    }).returning()
 
     return NextResponse.json(cloudStorage, { status: 201 })
   } catch (error) {

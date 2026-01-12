@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { db, invoices, cloudStorages, spaces } from "@/lib/db"
+import { eq, and, or, isNull, desc, inArray } from "drizzle-orm"
 import { z } from "zod"
 
 const updateInvoiceSchema = z.object({
@@ -28,35 +29,48 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get("status")
     const spaceId = searchParams.get("spaceId")
 
-    const invoices = await prisma.invoice.findMany({
-      where: {
-        OR: [
-          { spaceId: null },
-          { space: { userId: session.user.id } },
-        ],
-        cloudStorage: { userId: session.user.id },
-        ...(status && { status: status as any }),
-        ...(spaceId && { spaceId }),
+    // Get user's cloud storage IDs
+    const userCloudStorages = await db.query.cloudStorages.findMany({
+      where: eq(cloudStorages.userId, session.user.id),
+      columns: { id: true },
+    })
+    const userCloudStorageIds = userCloudStorages.map(cs => cs.id)
+
+    // Get user's space IDs
+    const userSpaces = await db.query.spaces.findMany({
+      where: eq(spaces.userId, session.user.id),
+      columns: { id: true },
+    })
+    const userSpaceIds = userSpaces.map(s => s.id)
+
+    // Build base filter: invoices from user's cloud storage
+    let whereConditions = inArray(invoices.cloudStorageId, userCloudStorageIds)
+
+    // Add status filter if provided
+    if (status) {
+      whereConditions = and(whereConditions, eq(invoices.status, status as any))!
+    }
+
+    // Add spaceId filter if provided
+    if (spaceId) {
+      whereConditions = and(whereConditions, eq(invoices.spaceId, spaceId))!
+    }
+
+    const invoiceList = await db.query.invoices.findMany({
+      where: whereConditions,
+      with: {
+        space: true,
+        cloudStorage: true,
       },
-      include: {
-        space: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        cloudStorage: {
-          select: {
-            id: true,
-            name: true,
-            provider: true,
-          },
-        },
-      },
-      orderBy: { createdAt: "desc" },
+      orderBy: desc(invoices.createdAt),
     })
 
-    return NextResponse.json(invoices)
+    // Filter to only include invoices with null spaceId or spaceId owned by user
+    const filteredInvoices = invoiceList.filter(inv =>
+      inv.spaceId === null || userSpaceIds.includes(inv.spaceId)
+    )
+
+    return NextResponse.json(filteredInvoices)
   } catch (error) {
     console.error("Error fetching invoices:", error)
     return NextResponse.json(

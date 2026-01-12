@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { db, assets, spaces } from "@/lib/db"
+import { eq, and } from "drizzle-orm"
 import { z } from "zod"
 import { calculateDepreciationEndDate } from "@/lib/utils"
 
@@ -44,32 +45,20 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const asset = await prisma.asset.findFirst({
-      where: {
-        id: params.id,
-        space: {
-          userId: session.user.id,
-        },
-      },
-      include: {
-        invoice: {
-          select: {
-            id: true,
-            fileName: true,
-            cloudFileUrl: true,
-            supplierName: true,
-          },
-        },
-        space: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
+    const asset = await db.query.assets.findFirst({
+      where: eq(assets.id, params.id),
+      with: {
+        invoice: true,
+        space: true,
       },
     })
 
     if (!asset) {
+      return NextResponse.json({ error: "Asset not found" }, { status: 404 })
+    }
+
+    // Verify ownership through space
+    if (asset.space.userId !== session.user.id) {
       return NextResponse.json({ error: "Asset not found" }, { status: 404 })
     }
 
@@ -98,16 +87,14 @@ export async function PATCH(
     const validatedData = updateAssetSchema.parse(body)
 
     // Verify ownership
-    const existingAsset = await prisma.asset.findFirst({
-      where: {
-        id: params.id,
-        space: {
-          userId: session.user.id,
-        },
+    const existingAsset = await db.query.assets.findFirst({
+      where: eq(assets.id, params.id),
+      with: {
+        space: true,
       },
     })
 
-    if (!existingAsset) {
+    if (!existingAsset || existingAsset.space.userId !== session.user.id) {
       return NextResponse.json({ error: "Asset not found" }, { status: 404 })
     }
 
@@ -134,20 +121,17 @@ export async function PATCH(
       depreciationEndDate = null
     }
 
-    const asset = await prisma.asset.update({
-      where: { id: params.id },
-      data: {
-        ...validatedData,
-        depreciationEndDate,
-      },
-      include: {
-        invoice: {
-          select: {
-            id: true,
-            fileName: true,
-            cloudFileUrl: true,
-          },
-        },
+    await db.update(assets).set({
+      ...validatedData,
+      depreciationEndDate,
+      updatedAt: new Date(),
+    }).where(eq(assets.id, params.id))
+
+    // Fetch the updated asset with relations
+    const asset = await db.query.assets.findFirst({
+      where: eq(assets.id, params.id),
+      with: {
+        invoice: true,
       },
     })
 
@@ -176,22 +160,18 @@ export async function DELETE(
     }
 
     // Verify ownership
-    const existingAsset = await prisma.asset.findFirst({
-      where: {
-        id: params.id,
-        space: {
-          userId: session.user.id,
-        },
+    const existingAsset = await db.query.assets.findFirst({
+      where: eq(assets.id, params.id),
+      with: {
+        space: true,
       },
     })
 
-    if (!existingAsset) {
+    if (!existingAsset || existingAsset.space.userId !== session.user.id) {
       return NextResponse.json({ error: "Asset not found" }, { status: 404 })
     }
 
-    await prisma.asset.delete({
-      where: { id: params.id },
-    })
+    await db.delete(assets).where(eq(assets.id, params.id))
 
     return NextResponse.json({ success: true })
   } catch (error) {

@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { signIn } from "next-auth/react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -11,12 +12,30 @@ import { Separator } from "@/components/ui/separator"
 export default function SignInPage() {
   const [email, setEmail] = useState("")
   const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState("")
+  const router = useRouter()
 
-  const handleEmailSignIn = async (e: React.FormEvent) => {
+  const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
-    await signIn("email", { email, callbackUrl: "/dashboard" })
-    setIsLoading(false)
+    setError("")
+
+    try {
+      const result = await signIn("credentials", {
+        email,
+        redirect: false,
+      })
+
+      if (result?.error) {
+        setError("Failed to sign in. Please try again.")
+      } else {
+        router.push("/dashboard")
+      }
+    } catch (err) {
+      setError("An error occurred. Please try again.")
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   const handleGoogleSignIn = () => {
@@ -33,7 +52,7 @@ export default function SignInPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <form onSubmit={handleEmailSignIn} className="space-y-4">
+          <form onSubmit={handleSignIn} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
               <Input
@@ -45,8 +64,11 @@ export default function SignInPage() {
                 required
               />
             </div>
+            {error && (
+              <p className="text-sm text-destructive">{error}</p>
+            )}
             <Button type="submit" className="w-full" disabled={isLoading}>
-              {isLoading ? "Sending link..." : "Sign in with Email"}
+              {isLoading ? "Signing in..." : "Sign in"}
             </Button>
           </form>
 
@@ -88,7 +110,7 @@ export default function SignInPage() {
           </Button>
 
           <p className="text-center text-sm text-muted-foreground">
-            A magic link will be sent to your email for passwordless sign-in.
+            Enter your email to sign in. A new account will be created if you don&apos;t have one.
           </p>
         </CardContent>
       </Card>

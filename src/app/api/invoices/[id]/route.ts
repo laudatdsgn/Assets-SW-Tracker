@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { db, invoices, spaces } from "@/lib/db"
+import { eq, and } from "drizzle-orm"
 import { z } from "zod"
 
 const updateInvoiceSchema = z.object({
@@ -27,41 +28,21 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const invoice = await prisma.invoice.findFirst({
-      where: {
-        id: params.id,
-        cloudStorage: { userId: session.user.id },
-      },
-      include: {
-        space: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        cloudStorage: {
-          select: {
-            id: true,
-            name: true,
-            provider: true,
-          },
-        },
-        assets: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        software: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, params.id),
+      with: {
+        space: true,
+        cloudStorage: true,
+        assets: true,
       },
     })
 
     if (!invoice) {
+      return NextResponse.json({ error: "Invoice not found" }, { status: 404 })
+    }
+
+    // Verify ownership through cloudStorage
+    if (invoice.cloudStorage?.userId !== session.user.id) {
       return NextResponse.json({ error: "Invoice not found" }, { status: 404 })
     }
 
@@ -90,33 +71,35 @@ export async function PATCH(
     const validatedData = updateInvoiceSchema.parse(body)
 
     // Verify ownership
-    const existingInvoice = await prisma.invoice.findFirst({
-      where: {
-        id: params.id,
-        cloudStorage: { userId: session.user.id },
+    const existingInvoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, params.id),
+      with: {
+        cloudStorage: true,
       },
     })
 
-    if (!existingInvoice) {
+    if (!existingInvoice || existingInvoice.cloudStorage?.userId !== session.user.id) {
       return NextResponse.json({ error: "Invoice not found" }, { status: 404 })
     }
 
     // If setting a spaceId, verify ownership
     if (validatedData.spaceId) {
-      const space = await prisma.space.findFirst({
-        where: { id: validatedData.spaceId, userId: session.user.id },
+      const space = await db.query.spaces.findFirst({
+        where: and(eq(spaces.id, validatedData.spaceId), eq(spaces.userId, session.user.id)),
       })
       if (!space) {
         return NextResponse.json({ error: "Space not found" }, { status: 404 })
       }
     }
 
-    const invoice = await prisma.invoice.update({
-      where: { id: params.id },
-      data: {
-        ...validatedData,
-        processedAt: validatedData.status === "PROCESSED" ? new Date() : undefined,
-      },
+    await db.update(invoices).set({
+      ...validatedData,
+      processedAt: validatedData.status === "PROCESSED" ? new Date() : undefined,
+      updatedAt: new Date(),
+    }).where(eq(invoices.id, params.id))
+
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, params.id),
     })
 
     return NextResponse.json(invoice)
@@ -144,20 +127,18 @@ export async function DELETE(
     }
 
     // Verify ownership
-    const existingInvoice = await prisma.invoice.findFirst({
-      where: {
-        id: params.id,
-        cloudStorage: { userId: session.user.id },
+    const existingInvoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, params.id),
+      with: {
+        cloudStorage: true,
       },
     })
 
-    if (!existingInvoice) {
+    if (!existingInvoice || existingInvoice.cloudStorage?.userId !== session.user.id) {
       return NextResponse.json({ error: "Invoice not found" }, { status: 404 })
     }
 
-    await prisma.invoice.delete({
-      where: { id: params.id },
-    })
+    await db.delete(invoices).where(eq(invoices.id, params.id))
 
     return NextResponse.json({ success: true })
   } catch (error) {
