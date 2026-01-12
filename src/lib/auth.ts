@@ -1,12 +1,9 @@
 import { NextAuthOptions } from "next-auth"
 import CredentialsProvider from "next-auth/providers/credentials"
 import GoogleProvider from "next-auth/providers/google"
-import { db, users, spaces, userSettings } from "@/lib/db"
-import { eq } from "drizzle-orm"
 import { randomUUID } from "crypto"
 
 export const authOptions: NextAuthOptions = {
-  // Note: Not using adapter with CredentialsProvider to avoid session conflicts
   session: {
     strategy: "jwt",
     maxAge: 30 * 24 * 60 * 60, // 30 days
@@ -23,16 +20,25 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(credentials) {
         if (!credentials?.email) {
-          throw new Error("Email is required")
+          console.error("No email provided")
+          return null
         }
 
+        console.log("Attempting to authenticate:", credentials.email)
+
         try {
+          // Dynamic import to avoid issues with database initialization
+          const { db, users, spaces, userSettings } = await import("@/lib/db")
+          const { eq } = await import("drizzle-orm")
+
           // Check if user exists
+          console.log("Checking for existing user...")
           const existingUser = await db.query.users.findFirst({
             where: eq(users.email, credentials.email),
           })
 
           if (existingUser) {
+            console.log("User found:", existingUser.id)
             return {
               id: existingUser.id,
               email: existingUser.email,
@@ -41,14 +47,18 @@ export const authOptions: NextAuthOptions = {
           }
 
           // Create new user
+          console.log("Creating new user...")
           const userId = randomUUID()
+
           await db.insert(users).values({
             id: userId,
             email: credentials.email,
             name: credentials.email.split("@")[0],
           })
+          console.log("User created:", userId)
 
           // Create default spaces
+          console.log("Creating default spaces...")
           await db.insert(spaces).values([
             {
               id: randomUUID(),
@@ -67,6 +77,7 @@ export const authOptions: NextAuthOptions = {
           ])
 
           // Create default settings
+          console.log("Creating default settings...")
           await db.insert(userSettings).values({
             id: randomUUID(),
             userId: userId,
@@ -74,14 +85,19 @@ export const authOptions: NextAuthOptions = {
             scanFrequency: 60,
           })
 
+          console.log("User setup complete")
           return {
             id: userId,
             email: credentials.email,
             name: credentials.email.split("@")[0],
           }
         } catch (error) {
-          console.error("Auth error:", error)
-          throw new Error("Authentication failed")
+          console.error("=== AUTH ERROR ===")
+          console.error("Error type:", error instanceof Error ? error.constructor.name : typeof error)
+          console.error("Error message:", error instanceof Error ? error.message : String(error))
+          console.error("Full error:", error)
+          console.error("==================")
+          return null
         }
       },
     }),
@@ -112,5 +128,5 @@ export const authOptions: NextAuthOptions = {
       return session
     },
   },
-  debug: process.env.NODE_ENV === "development",
+  debug: true,
 }
