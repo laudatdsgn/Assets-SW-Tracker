@@ -124,6 +124,7 @@ export const invoices = sqliteTable("invoice", {
   cloudFileId: text("cloudFileId"),
   cloudFileUrl: text("cloudFileUrl"),
   fileName: text("fileName").notNull(),
+  invoiceType: text("invoiceType").default("RECEIVED"), // RECEIVED = přijaté, ISSUED = vydané
   supplierName: text("supplierName"),
   invoiceNumber: text("invoiceNumber"),
   issueDate: integer("issueDate", { mode: "timestamp" }),
@@ -161,7 +162,9 @@ export const invoiceFolders = sqliteTable("invoiceFolder", {
   id: text("id").primaryKey(),
   cloudStorageId: text("cloudStorageId").notNull().references(() => cloudStorages.id, { onDelete: "cascade" }),
   folderId: text("folderId").notNull(),
+  folderName: text("folderName").notNull(),
   folderPath: text("folderPath").notNull(),
+  scanRecursively: integer("scanRecursively", { mode: "boolean" }).notNull().default(true),
   lastScannedAt: integer("lastScannedAt", { mode: "timestamp" }),
   isActive: integer("isActive", { mode: "boolean" }).notNull().default(true),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
